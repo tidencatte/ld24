@@ -3,16 +3,18 @@ require "tintor"
 -- borrowed from the LOVE snippets wiki
 require "classes"
 require "utils"
-
+require "worldgen"
 dungeon_rules = {
 	slow = false,
 	hurt = false,
 	dark = false,
 	fatal_blocks = false,
 	more_enemies = false,
+	even_more_enemies = false,
+	aggressive_enemies = false,
+	even_more_aggressive_enemies = false,
 	lava = true,
 	decay = false,
-
 }
 
 player_dna = {
@@ -30,6 +32,8 @@ tileset = {}
 tileset["tiles"] = {}
 tileset["image"] = nil
 
+enemy_sprites = {}
+
 animations = {}
 needs_updates = {}
 
@@ -37,6 +41,8 @@ class "_Player" {
 	x = 0;
 	y = 0;
 }
+
+projectiles = {}
 
 function _Player:__init(_x, _y, health)
 	self.x = _x
@@ -48,21 +54,50 @@ class "Enemy" {
 	x = 0;
 	y = 0;
 	health = 0;
+	mdir = 1; -- up
 	update = function(behavior)
 
 	end;
-	attack = function(dir)
+	attack = function()
+		local vel_x, vel_y = math.random(1,15),math.random(1,15)
+		table.insert(projectiles,1,{x,y,vel_x,vel_y})
 	end;
 }
 
-function Enemy:__init(x, y, health)
-	self.x = x
-	self.y = y
+function Enemy:__init(health)
 	self.health = health
+end
+
+function Enemy:spawn(world)
+	local suitable = false
+	while (suitable == false) do
+		local _x,_y = math.random(1,32),math.random(1,24)
+		if (world[_x][_y] == 1) then
+			suitable = true
+			break
+		end
+	end
+	self.x = (_x*16)-8
+	self.y = (_y*16)-8
 end
 
 function Enemy:update()
 	-- random movement behavior.
+	if (mdir == 1) then
+		self.y = self.y - 1
+	end
+
+	if (mdir == 2) then
+		self.y = self.y + 1
+	end
+
+	if (mdir == 3) then
+		self.x = self.x - 1
+	end
+
+	if (mdir == 4) then
+		self.x = self.x + 1
+	end
 end
 
 enemies = {}
@@ -77,111 +112,14 @@ GAMESTATE = {
 	started = false,
 	player_dead = false,
 	game_finished = false,
-	floor = 1, -- max: 25, introduce a new rule every 5 floors
+	floor = 1, -- max: 25, introduce a new rule every 3 floors
 }
 
-function gen_world()
-	local _world = {}
-
-	-- fill in the outside edges with room tiles
-	for k = 1,WORLD_HEIGHT do
-		_world[k] = {}
-		for v = 1,WORLD_WIDTH do
-			if (k == 1 or k == WORLD_HEIGHT or v == 1 or v == WORLD_WIDTH) then
-				_world[k][v] = 2 -- wall tile
-			else
-				_world[k][v] = 1 -- floor tile
-			end
-		end
-	end
-
-	function checkdir(x,y)
-		if (x < 4 or x > 28) then
-			return -1
-		end
-
-		if (y < 4 or y > 18) then
-			return -1
-		end
-
-		return true
-	end
-
-	function move_from(x,y)
-		local dir = math.random(1,4)
-		if (dir == 1) then
-			return x,y-1
-		end
-		if (dir == 2) then
-			return x,y+1
-		end
-		if (dir == 3) then
-			return x-1,y
-		end
-		if (dir == 4) then
-			return x+1,y
-		end	
-	end
-
-	function lavapool (x,y,budget)
-		-- "budget" here is just how big the pool can be, in tiles.
-		if (budget > 0) then
-			-- pick a random direction, change a tile to a lava tile
-			_world[y][x] = 4 
-
-			_world[y-1][x] = 4
-			_world[y+1][x] = 4
-			_world[y][x-1] = 4
-			_world[y][x+1] = 4
-			_world[y-2][x] = 4
-			_world[y+2][x] = 4
-			_world[y][x-2] = 4
-			_world[y][x+2] = 4
-			_world[y-1][x-1] = 4 -- upper left
-			_world[y+1][x+1] = 4 -- lower right
-			_world[y+1][x-1] = 4 -- lower left
-			_world[y-1][x+1] = 4 -- upper right
-			-- up, down, left, right; 1,2,3,4
-			local _x,_y = nil,nil
-			local valid_dir = false
-			while (valid_dir == false) do
-				_x,_y = move_from(x,y)
-				if (checkdir(_x,_y) == true) then
-					valid_dir = true
-					break
-				end
-
-				if (checkdir(_x,_y) == -1) then
-					valid_dir = true
-					budget = 1
-					break
-				end
-			end
-			lavapool(_x,_y,budget-1)
-		end
-	end
-
-	if (dungeon_rules["lava"]) then
-		-- pick a few spots, add some lava pools
-		local _pools = {}
-		for p = 1,10 do
-			-- just generate the origin points for these pools
-			table.insert(_pools, p, {math.random(6,28), math.random(7,18)})
-		end
-
-		for k,p in pairs(_pools) do
-			lavapool(p[1],p[2],10)
-		end
-	end
-
-	-- put the downward stairs in our world, with some open space around it
-	_world[3][3] = 3
-	return _world
-end
-
 function checktile(x,y)
-	local x,y = math.ceil(x),math.ceil(y)
-	if (x == 3 or y == 3) then
+	local _x,_y = x, y
+	local x,y = math.floor(x),math.floor(y)
+
+	if (_x == 4 and _y == 4) then
 		return 2 -- Stairs.
 	end
 
@@ -195,7 +133,7 @@ local player =  nil
 function love.load()
 	love.graphics.setMode(720, 480)
 
-	player = _Player:new(28*16, 19*16, 100)
+	player = _Player:new(30*16, 22*16, 100)
 
 	-- create the tileset, 16x16 tiles
 
@@ -214,7 +152,7 @@ function love.load()
 	teffect = tintor("simple")
 
 	for k = 1,10 do
-
+		table.insert(enemies,k,Enemy:new(20))
 	end
 
 	ui_icons = love.graphics.newImage("ui_icons.png")
@@ -228,13 +166,7 @@ function love.load()
 	world = gen_world()
 end
 
-
-
 function love.update(dt)
-	for k,v in pairs(enemies) do
-
-	end
-
 	-- agh, movement code!!!!
 	-- TODO: set directionality for attacks.
 	if (love.keyboard.isDown("left")) then
@@ -254,14 +186,33 @@ function love.update(dt)
 	end
 
 	-- check the tile the player is under
-	local t = checktile(player.x/16,player.y/16)
+	local t = checktile(player.x/16,player.y/16) -- fucking hacky
+
+	if (t == 4) then
+		GAMESTATE["player_dead"] = true
+	end
+
+	if (t == 2) then
+		world = gen_world()
+		player.x = (28*16)
+		player.y = (19*16)
+		GAMESTATE["floor"] = GAMESTATE["floor"] + 1
+
+		for k = 1,#enemies do
+			table.remove(enemies)
+		end
+
+		for k = 1,10 do
+			table.insert(enemies,k,Enemy:new(20))
+		end	
+	end
 end
 
 function love.draw()
 	for k = 1,WORLD_HEIGHT do
 		for v = 1,WORLD_WIDTH do
 			if (world[k][v] == 4) then -- lava
-				teffect:send("color2",{177,0,0,255})
+				teffect:send("color2",{202,0,0,255})
 				love.graphics.setPixelEffect(teffect)
 			else
 				love.graphics.setPixelEffect()
@@ -277,9 +228,17 @@ function love.draw()
 	love.graphics.setPixelEffect()
 	love.graphics.push() -- store current render state
 	love.graphics.translate(32,32)
-	-- rectify the player's "world" coordinates into display coordinates
 	love.graphics.draw(player_img, player.x, player.y)
 	love.graphics.pop()
+
+	if (GAMESTATE["player_dead"] == true) then
+		-- draw a big fancy GAME OVER! image
+	end
+
+	-- DEBUG CRAP
+	love.graphics.print("X: "..player.x.." wX:"..(player.x/16),0,0)
+	love.graphics.print("Y: "..player.y.." wY:"..(player.y/16),0,16)
+	love.graphics.print("Floor: "..GAMESTATE["floor"],640,0)
 end
 
 function love.keypressed (key, unicode)
