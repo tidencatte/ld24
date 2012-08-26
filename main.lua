@@ -1,53 +1,46 @@
 require "tintor"
+
 -- borrowed from the LOVE snippets wiki
+require "classes"
+require "utils"
 
-local mt_class = {}
+dungeon_rules = {
+	slow = false,
+	hurt = false,
+	dark = false,
+	fatal_blocks = false,
+	more_enemies = false,
+	lava = true,
+	decay = false,
 
-function mt_class:extends(parent)
-   self.super = parent
-   setmetatable(mt_class, {__index = parent})
-   parent.__members__ = parent.__members__ or {}
-   return self
-end
+}
 
-local function define(class, members)
-   class.__members__ = class.__members__ or {}
-   for k, v in pairs(members) do
-      class.__members__[k] = v
-   end
-   function class:new(...)
-      local newvalue = {}
-      for k, v in pairs(class.__members__) do
-         newvalue[k] = v
-      end
-      setmetatable(newvalue, {__index = class})
-      if newvalue.__init then
-         newvalue:__init(...)
-      end
-      return newvalue
-   end
-end
-
-function class(name)
-    local newclass = {}
-   _G[name] = newclass
-   return setmetatable(newclass, {__index = mt_class, __call = define})
-end
+player_dna = {
+	laser_eyes = false, -- pew pew pew |3
+	speed = false, -- you move faster
+	jump = false, -- pesky lava pits are no longer a problem
+	attack = false, -- HOLY SHIT YOU CAN PUNCH STUFF!
+	durable = false, -- more health
+	more_durable = false, -- even more health
+	even_more_durable = false, -- so much health
+	vuln_heat = false, -- health loss from lava floors
+}
 
 tileset = {}
 tileset["tiles"] = {}
 tileset["image"] = nil
+
 animations = {}
 needs_updates = {}
 
-class "Player" {
+class "_Player" {
 	x = 0;
 	y = 0;
 }
 
-function Player:__init(x, y, health)
-	self.x = 0
-	self.y = 0
+function _Player:__init(_x, _y, health)
+	self.x = _x
+	self.y = _y
 	self.health = health
 end
 
@@ -68,109 +61,235 @@ function Enemy:__init(x, y, health)
 	self.health = health
 end
 
+function Enemy:update()
+	-- random movement behavior.
+end
+
 enemies = {}
 
-function make_animation(img, label, spx, spy)
-	local _i = love.graphics.newImage(img)
-	local _qs = {}
-	local fcounter = 0
-	local width, height = _i:getWidth(),_i:getHeight()
-	
-	for k = 0,(height/spy)-1 do
-		for v = 0,(width/spx)-1 do
-			table.insert(_qs, love.graphics.newQuad(v*16, k*16, spx, spy, 64, 64))
-			fcounter = (fcounter + 1)
+-- some constants
+
+WORLD_WIDTH = 32
+WORLD_HEIGHT = 24
+
+GAMESTATE = {
+	showing_rules = false,
+	started = false,
+	player_dead = false,
+	game_finished = false,
+	floor = 1, -- max: 25, introduce a new rule every 5 floors
+}
+
+function gen_world()
+	local _world = {}
+
+	-- fill in the outside edges with room tiles
+	for k = 1,WORLD_HEIGHT do
+		_world[k] = {}
+		for v = 1,WORLD_WIDTH do
+			if (k == 1 or k == WORLD_HEIGHT or v == 1 or v == WORLD_WIDTH) then
+				_world[k][v] = 2 -- wall tile
+			else
+				_world[k][v] = 1 -- floor tile
+			end
 		end
 	end
 
-	table.insert(_qs, 1, _i)
-	table.insert(_qs, 1, fcounter)
-	table.insert(_qs, 1, 0)
-	animations[label] = _qs
-end
+	function checkdir(x,y)
+		if (x < 4 or x > 28) then
+			return -1
+		end
 
-function get_animation(label)
-	local anim = animations[label]
-	needs_updates[label] = true
-	return {anim[4+anim[1]], anim[3]}
-end
+		if (y < 4 or y > 18) then
+			return -1
+		end
 
-function progressbar (x, y, width, pct, color1, color2)
-	-- color1: background color
-	-- color2: filled color
-	if (pct > 100 or pct < 0) then
-		error("Percent out of range")
+		return true
 	end
-	local _p = pct/100
-	local _r, _g, _b, _a = love.graphics.getColor()
-	love.graphics.setColor(unpack(color2))
-	love.graphics.rectangle("line", x, y, width, 16)
-	love.graphics.setColor(unpack(color1))
-	love.graphics.rectangle("fill", x+1, y+1, width-2, 14)
-	love.graphics.setColor(unpack(color2))
-	love.graphics.rectangle("fill", x+1, y+1, math.ceil(_p*width),14)
 
-	-- restore the color when we're done with our drawing operation
+	function move_from(x,y)
+		local dir = math.random(1,4)
+		if (dir == 1) then
+			return x,y-1
+		end
+		if (dir == 2) then
+			return x,y+1
+		end
+		if (dir == 3) then
+			return x-1,y
+		end
+		if (dir == 4) then
+			return x+1,y
+		end	
+	end
 
-	love.graphics.setColor(_r, _g, _b, _a)
+	function lavapool (x,y,budget)
+		-- "budget" here is just how big the pool can be, in tiles.
+		if (budget > 0) then
+			-- pick a random direction, change a tile to a lava tile
+			_world[y][x] = 4 
+
+			_world[y-1][x] = 4
+			_world[y+1][x] = 4
+			_world[y][x-1] = 4
+			_world[y][x+1] = 4
+			_world[y-2][x] = 4
+			_world[y+2][x] = 4
+			_world[y][x-2] = 4
+			_world[y][x+2] = 4
+			_world[y-1][x-1] = 4 -- upper left
+			_world[y+1][x+1] = 4 -- lower right
+			_world[y+1][x-1] = 4 -- lower left
+			_world[y-1][x+1] = 4 -- upper right
+			-- up, down, left, right; 1,2,3,4
+			local _x,_y = nil,nil
+			local valid_dir = false
+			while (valid_dir == false) do
+				_x,_y = move_from(x,y)
+				if (checkdir(_x,_y) == true) then
+					valid_dir = true
+					break
+				end
+
+				if (checkdir(_x,_y) == -1) then
+					valid_dir = true
+					budget = 1
+					break
+				end
+			end
+			lavapool(_x,_y,budget-1)
+		end
+	end
+
+	if (dungeon_rules["lava"]) then
+		-- pick a few spots, add some lava pools
+		local _pools = {}
+		for p = 1,10 do
+			-- just generate the origin points for these pools
+			table.insert(_pools, p, {math.random(6,28), math.random(7,18)})
+		end
+
+		for k,p in pairs(_pools) do
+			lavapool(p[1],p[2],10)
+		end
+	end
+
+	-- put the downward stairs in our world, with some open space around it
+	_world[3][3] = 3
+	return _world
 end
+
+function checktile(x,y)
+	local x,y = math.ceil(x),math.ceil(y)
+	if (x == 3 or y == 3) then
+		return 2 -- Stairs.
+	end
+
+	if (world[y][x] == 4) then
+		return 3 -- ~LAVA~
+	end
+end
+
+local player =  nil
 
 function love.load()
 	love.graphics.setMode(720, 480)
-	player = Player:new(50, 50, 100)
 
-	uih_scale = 1.0
-	uih_accum = 0.5
-	uih_factor = 0.01
+	player = _Player:new(28*16, 19*16, 100)
 
 	-- create the tileset, 16x16 tiles
+
 	tileset["image"] = love.graphics.newImage("tileset.png")
 	local _image = tileset["image"]
 	local _w = _image:getWidth()
 	local _h = _image:getHeight()
-	for k = 1,(_w/16)-1 do
-		tileset["tiles"][k] = {}
-		for v = 1,(_h/16)-1 do
-			table.insert(tileset["tiles"][k], v, 
-				love.graphics.newQuad((k-1)*16, (v-1)*16, 16, 16, _w, _h))
+
+	for k = 1,(_w/32)-1 do
+		for v = 1,(_h/32)-1 do
+			table.insert(tileset["tiles"], k*v,
+				love.graphics.newQuad((k-1)*32, (v-1)*32, 32, 32, _w, _h))
 		end
 	end
 
 	teffect = tintor("simple")
-	-- create a bunch of enemies
-	for k = 1,25 do
+
+	for k = 1,10 do
 
 	end
+
 	ui_icons = love.graphics.newImage("ui_icons.png")
 
 	ui_heart = love.graphics.newQuad(0,0,16,16,256,256)
 	love.graphics.setDefaultImageFilter("nearest", "nearest")
+
+	player_img = love.graphics.newImage("player.png")
+	love.keyboard.setKeyRepeat(0, 0.22)
+
+	world = gen_world()
 end
+
+
 
 function love.update(dt)
 	for k,v in pairs(enemies) do
 
 	end
 
-	uih_accum = uih_accum + uih_factor
-	if (uih_accum < 0.5) then
-		uih_factor = -uih_factor
-	end
-	if (uih_accum > 0.8) then
-		uih_factor = -uih_factor
+	-- agh, movement code!!!!
+	-- TODO: set directionality for attacks.
+	if (love.keyboard.isDown("left")) then
+		player.x = player.x - 1
 	end
 
-	uih_scale = math.sin(uih_accum*2)
+	if (love.keyboard.isDown("right")) then
+		player.x = player.x + 1
+	end
+
+	if (love.keyboard.isDown("up")) then
+		player.y = player.y - 1
+	end
+
+	if (love.keyboard.isDown("down")) then
+		player.y = player.y + 1
+	end
+
+	-- check the tile the player is under
+	local t = checktile(player.x/16,player.y/16)
 end
 
 function love.draw()
-	progressbar(1,1,64,55,{128,0,0},{255,0,0})
-	teffect:send("color2", {219,221,255,255})
-	love.graphics.drawq(ui_icons, ui_heart, 66, 1, 0, uih_scale)
+	for k = 1,WORLD_HEIGHT do
+		for v = 1,WORLD_WIDTH do
+			if (world[k][v] == 4) then -- lava
+				teffect:send("color2",{177,0,0,255})
+				love.graphics.setPixelEffect(teffect)
+			else
+				love.graphics.setPixelEffect()
+			end
+
+			love.graphics.drawq(
+				tileset["image"],
+				tileset["tiles"][world[k][v]],
+				(32+(16*v)), (32+(16*k)),0,0.5)
+		end
+	end
+
+	love.graphics.setPixelEffect()
+	love.graphics.push() -- store current render state
+	love.graphics.translate(32,32)
+	-- rectify the player's "world" coordinates into display coordinates
+	love.graphics.draw(player_img, player.x, player.y)
+	love.graphics.pop()
 end
 
-
 function love.keypressed (key, unicode)
+	if (key == "space") then
+		-- need to add attack code.
+	end
+
+	if (key == "j") then
+		world = gen_world()
+	end
 	if (key == "escape") or (key == "q") then
 		love.event.push("quit")
 	end
